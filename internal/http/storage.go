@@ -71,7 +71,7 @@ func (h *StorageHandler) tenantBaseDir(r *http.Request) string {
 // tenants (tenant isolation root — each tenant's data is scoped internally).
 var protectedDirs = []string{"skills", "skills-store", "media", "tenants"}
 
-func isProtectedPath(rel string) bool {
+func topLevelPath(rel string) string {
 	top := rel
 	if before, _, ok := strings.Cut(rel, "/"); ok {
 		top = before
@@ -80,12 +80,30 @@ func isProtectedPath(rel string) bool {
 	if i := strings.IndexByte(top, '/'); i >= 0 {
 		top = top[:i]
 	}
+	return top
+}
+
+func isProtectedPath(rel string) bool {
+	top := topLevelPath(rel)
 	for _, d := range protectedDirs {
 		if strings.EqualFold(top, d) {
 			return true
 		}
 	}
 	return false
+}
+
+// isHiddenPath reports paths that should not be surfaced in the Storage UI/API.
+// Master tenant keeps its legacy base dir for backward compatibility, but must
+// not expose the cross-tenant isolation root.
+func (h *StorageHandler) isHiddenPath(r *http.Request, rel string) bool {
+	if rel == "" {
+		return false
+	}
+	if store.TenantIDFromContext(r.Context()) != store.MasterTenantID {
+		return false
+	}
+	return strings.EqualFold(topLevelPath(rel), "tenants")
 }
 
 // handleList lists files and directories under ~/.goclaw/ with depth limiting.
@@ -111,6 +129,10 @@ func (h *StorageHandler) handleList(w http.ResponseWriter, r *http.Request) {
 	base := h.tenantBaseDir(r)
 	rootDir := base
 	if subPath != "" {
+		if h.isHiddenPath(r, subPath) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": i18n.T(locale, i18n.MsgNotFound, "path", subPath)})
+			return
+		}
 		rootDir = filepath.Join(base, filepath.Clean(subPath))
 		if !strings.HasPrefix(rootDir, base) {
 			slog.Warn("security.storage_escape", "resolved", rootDir, "root", base)
@@ -138,6 +160,13 @@ func (h *StorageHandler) handleList(w http.ResponseWriter, r *http.Request) {
 			return nil
 		}
 		rel, _ := filepath.Rel(base, path)
+
+		if h.isHiddenPath(r, rel) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 
 		// Skip symlinks
 		if d.Type()&os.ModeSymlink != 0 {
@@ -250,6 +279,9 @@ func (h *StorageHandler) handleSize(w http.ResponseWriter, r *http.Request) {
 			return nil
 		}
 		rel, _ := filepath.Rel(sizeBase, path)
+		if h.isHiddenPath(r, rel) {
+			return nil
+		}
 		if skills.IsSystemArtifact(rel) {
 			return nil
 		}
@@ -288,6 +320,10 @@ func (h *StorageHandler) handleRead(w http.ResponseWriter, r *http.Request) {
 	if strings.Contains(relPath, "..") {
 		slog.Warn("security.storage_traversal", "path", relPath)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidPath)})
+		return
+	}
+	if h.isHiddenPath(r, relPath) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": i18n.T(locale, i18n.MsgFileNotFound)})
 		return
 	}
 
