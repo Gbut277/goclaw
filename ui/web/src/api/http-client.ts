@@ -69,15 +69,9 @@ export class HttpClient {
   }
 
   async upload<T>(path: string, formData: FormData): Promise<T> {
-    const headers: Record<string, string> = {};
-    const token = this.getToken();
-    if (token) headers["Authorization"] = `Bearer ${token}`;
-    const userId = this.getUserId();
-    if (userId) headers["X-GoClaw-User-Id"] = userId;
-
     const res = await fetch(this.buildUrl(path), {
       method: "POST",
-      headers,
+      headers: this.authHeaders(),
       body: formData,
     });
 
@@ -111,8 +105,8 @@ export class HttpClient {
     if (userId) h["X-GoClaw-User-Id"] = userId;
     const senderID = this.getSenderID();
     if (senderID) h["X-GoClaw-Sender-Id"] = senderID;
-    // Tenant scope: narrow cross-tenant admin to a specific tenant
-    const tenantScope = localStorage.getItem("goclaw:tenant_id");
+    // Tenant scope: owner flows persist tenant_id, browser-paired tenant users persist tenant_hint.
+    const tenantScope = localStorage.getItem("goclaw:tenant_id") || localStorage.getItem("goclaw:tenant_hint");
     if (tenantScope) h["X-GoClaw-Tenant-Id"] = tenantScope;
     return h;
   }

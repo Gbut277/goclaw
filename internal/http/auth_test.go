@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -32,6 +33,21 @@ func setupTestToken(t *testing.T, token string) {
 	old := pkgGatewayToken
 	pkgGatewayToken = token
 	t.Cleanup(func() { pkgGatewayToken = old })
+}
+
+func setupTestTenantStore(t *testing.T, tenants ...*store.TenantData) {
+	t.Helper()
+	ts := newMockTenantStore(tenants...)
+	old := pkgTenantCache
+	pkgTenantCache = newTenantCache(ts, 5*time.Minute)
+	t.Cleanup(func() { pkgTenantCache = old })
+}
+
+func setupTestPairingStore(t *testing.T, paired bool) {
+	t.Helper()
+	old := pkgPairingStore
+	pkgPairingStore = mockPairingStore{paired: paired}
+	t.Cleanup(func() { pkgPairingStore = old })
 }
 
 func TestResolveAuth_GatewayToken(t *testing.T) {
@@ -227,6 +243,69 @@ func TestRequireAuth_InjectLocaleAndUserID(t *testing.T) {
 	}
 }
 
+func TestRequireAuth_InjectsTenantScopeFromHeader(t *testing.T) {
+	setupTestCache(t, nil)
+	setupTestToken(t, "secret")
+	tenantID := uuid.MustParse("0193a5b0-7000-7000-8000-000000000222")
+	setupTestTenantStore(t, &store.TenantData{ID: tenantID, Slug: "tenant-zalo"})
+
+	var gotTenantID uuid.UUID
+	var gotTenantSlug string
+	handler := requireAuth("", func(w http.ResponseWriter, r *http.Request) {
+		gotTenantID = store.TenantIDFromContext(r.Context())
+		gotTenantSlug = store.TenantSlugFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})
+
+	r := httptest.NewRequest("GET", "/v1/storage/files", nil)
+	r.Header.Set("Authorization", "Bearer secret")
+	r.Header.Set("X-GoClaw-Tenant-Id", "tenant-zalo")
+	w := httptest.NewRecorder()
+	handler(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if gotTenantID != tenantID {
+		t.Fatalf("tenantID = %s, want %s", gotTenantID, tenantID)
+	}
+	if gotTenantSlug != "tenant-zalo" {
+		t.Fatalf("tenantSlug = %q, want tenant-zalo", gotTenantSlug)
+	}
+}
+
+func TestRequireAuth_BrowserPairingHonorsTenantHeader(t *testing.T) {
+	setupTestCache(t, nil)
+	setupTestToken(t, "secret-token-not-used")
+	setupTestPairingStore(t, true)
+	tenantID := uuid.MustParse("0193a5b0-7000-7000-8000-000000000223")
+	setupTestTenantStore(t, &store.TenantData{ID: tenantID, Slug: "tenant-paired"})
+
+	var gotTenantID uuid.UUID
+	var gotTenantSlug string
+	handler := requireAuth("", func(w http.ResponseWriter, r *http.Request) {
+		gotTenantID = store.TenantIDFromContext(r.Context())
+		gotTenantSlug = store.TenantSlugFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})
+
+	r := httptest.NewRequest("GET", "/v1/storage/files", nil)
+	r.Header.Set("X-GoClaw-Sender-Id", "browser-device-1")
+	r.Header.Set("X-GoClaw-Tenant-Id", "tenant-paired")
+	w := httptest.NewRecorder()
+	handler(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if gotTenantID != tenantID {
+		t.Fatalf("tenantID = %s, want %s", gotTenantID, tenantID)
+	}
+	if gotTenantSlug != "tenant-paired" {
+		t.Fatalf("tenantSlug = %q, want tenant-paired", gotTenantSlug)
+	}
+}
+
 func TestRequireAuth_AdminRoleEnforced(t *testing.T) {
 	// No auth configured → admin role (dev/single-user mode) → admin endpoint accessible
 	setupTestCache(t, nil)
@@ -326,3 +405,73 @@ func TestInitAPIKeyCache_IgnoresOtherKinds(t *testing.T) {
 		t.Errorf("calls = %d, want 1 (non-api_keys kind should not invalidate)", ms.getCalls())
 	}
 }
+
+type mockTenantStore struct {
+	byID   map[uuid.UUID]*store.TenantData
+	bySlug map[string]*store.TenantData
+}
+
+func newMockTenantStore(tenants ...*store.TenantData) *mockTenantStore {
+	m := &mockTenantStore{
+		byID:   make(map[uuid.UUID]*store.TenantData, len(tenants)),
+		bySlug: make(map[string]*store.TenantData, len(tenants)),
+	}
+	for _, tenant := range tenants {
+		if tenant == nil {
+			continue
+		}
+		m.byID[tenant.ID] = tenant
+		m.bySlug[tenant.Slug] = tenant
+	}
+	return m
+}
+
+func (m *mockTenantStore) CreateTenant(context.Context, *store.TenantData) error { return nil }
+func (m *mockTenantStore) GetTenant(_ context.Context, id uuid.UUID) (*store.TenantData, error) {
+	return m.byID[id], nil
+}
+func (m *mockTenantStore) GetTenantBySlug(_ context.Context, slug string) (*store.TenantData, error) {
+	return m.bySlug[slug], nil
+}
+func (m *mockTenantStore) ListTenants(context.Context) ([]store.TenantData, error) { return nil, nil }
+func (m *mockTenantStore) UpdateTenant(context.Context, uuid.UUID, map[string]any) error {
+	return nil
+}
+func (m *mockTenantStore) AddUser(context.Context, uuid.UUID, string, string) error { return nil }
+func (m *mockTenantStore) RemoveUser(context.Context, uuid.UUID, string) error      { return nil }
+func (m *mockTenantStore) GetUserRole(context.Context, uuid.UUID, string) (string, error) {
+	return "", nil
+}
+func (m *mockTenantStore) ListUsers(context.Context, uuid.UUID) ([]store.TenantUserData, error) {
+	return nil, nil
+}
+func (m *mockTenantStore) ListUserTenants(context.Context, string) ([]store.TenantUserData, error) {
+	return nil, nil
+}
+func (m *mockTenantStore) ResolveUserTenant(context.Context, string) (uuid.UUID, error) {
+	return store.MasterTenantID, nil
+}
+func (m *mockTenantStore) GetTenantUser(context.Context, uuid.UUID) (*store.TenantUserData, error) {
+	return nil, nil
+}
+func (m *mockTenantStore) CreateTenantUserReturning(context.Context, uuid.UUID, string, string, string) (*store.TenantUserData, error) {
+	return nil, nil
+}
+
+type mockPairingStore struct {
+	paired bool
+}
+
+func (m mockPairingStore) RequestPairing(context.Context, string, string, string, string, map[string]string) (string, error) {
+	return "", nil
+}
+func (m mockPairingStore) ApprovePairing(context.Context, string, string) (*store.PairedDeviceData, error) {
+	return nil, nil
+}
+func (m mockPairingStore) DenyPairing(context.Context, string) error           { return nil }
+func (m mockPairingStore) RevokePairing(context.Context, string, string) error { return nil }
+func (m mockPairingStore) IsPaired(context.Context, string, string) (bool, error) {
+	return m.paired, nil
+}
+func (m mockPairingStore) ListPending(context.Context) []store.PairingRequestData { return nil }
+func (m mockPairingStore) ListPaired(context.Context) []store.PairedDeviceData    { return nil }

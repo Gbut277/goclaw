@@ -159,6 +159,7 @@ type authResult struct {
 	Authenticated bool
 	KeyData       *store.APIKeyData // non-nil when authenticated via API key
 	TenantID      uuid.UUID         // resolved tenant; always concrete after resolution
+	TenantSlug    string
 }
 
 // resolveAuth determines the caller's role from the request.
@@ -181,17 +182,7 @@ func resolveAuthWithBearer(r *http.Request, bearer string) authResult {
 			role = permissions.RoleOwner
 		}
 		res := authResult{Role: role, Authenticated: true}
-		tenantVal := r.Header.Get("X-GoClaw-Tenant-Id")
-		if pkgTenantCache != nil && tenantVal != "" {
-			// Resolve tenant from header (works for both owner and non-owner)
-			if tid, err := uuid.Parse(tenantVal); err == nil {
-				if t, err := pkgTenantCache.GetTenant(r.Context(), tid); err == nil && t != nil {
-					res.TenantID = t.ID
-				}
-			} else if t, err := pkgTenantCache.GetTenantBySlug(r.Context(), tenantVal); err == nil && t != nil {
-				res.TenantID = t.ID
-			}
-		}
+		res.TenantID, res.TenantSlug = resolveTenantScope(r.Context(), r.Header.Get("X-GoClaw-Tenant-Id"))
 		if res.TenantID == uuid.Nil {
 			res.TenantID = store.MasterTenantID
 		}
@@ -206,6 +197,7 @@ func resolveAuthWithBearer(r *http.Request, bearer string) authResult {
 			res.TenantID = store.MasterTenantID
 		} else {
 			res.TenantID = keyData.TenantID
+			res.TenantSlug = resolveTenantSlug(r.Context(), keyData.TenantID)
 		}
 		return res
 	}
@@ -213,7 +205,12 @@ func resolveAuthWithBearer(r *http.Request, bearer string) authResult {
 	if senderID := r.Header.Get("X-GoClaw-Sender-Id"); senderID != "" && pkgPairingStore != nil {
 		paired, err := pkgPairingStore.IsPaired(r.Context(), senderID, "browser")
 		if err == nil && paired {
-			return authResult{Role: permissions.RoleOperator, Authenticated: true, TenantID: store.MasterTenantID}
+			res := authResult{Role: permissions.RoleOperator, Authenticated: true}
+			res.TenantID, res.TenantSlug = resolveTenantScope(r.Context(), r.Header.Get("X-GoClaw-Tenant-Id"))
+			if res.TenantID == uuid.Nil {
+				res.TenantID = store.MasterTenantID
+			}
+			return res
 		}
 		if err != nil {
 			slog.Warn("security.http_pairing_check_failed", "sender_id", senderID, "error", err)
@@ -223,9 +220,40 @@ func resolveAuthWithBearer(r *http.Request, bearer string) authResult {
 	}
 	// No auth configured → admin (no token = dev/single-user mode, full access)
 	if pkgGatewayToken == "" {
-		return authResult{Role: permissions.RoleAdmin, Authenticated: true, TenantID: store.MasterTenantID}
+		res := authResult{Role: permissions.RoleAdmin, Authenticated: true}
+		res.TenantID, res.TenantSlug = resolveTenantScope(r.Context(), r.Header.Get("X-GoClaw-Tenant-Id"))
+		if res.TenantID == uuid.Nil {
+			res.TenantID = store.MasterTenantID
+		}
+		return res
 	}
 	return authResult{}
+}
+
+func resolveTenantScope(ctx context.Context, tenantVal string) (uuid.UUID, string) {
+	if pkgTenantCache == nil || tenantVal == "" {
+		return uuid.Nil, ""
+	}
+	if tid, err := uuid.Parse(tenantVal); err == nil {
+		if t, err := pkgTenantCache.GetTenant(ctx, tid); err == nil && t != nil {
+			return t.ID, t.Slug
+		}
+		return uuid.Nil, ""
+	}
+	if t, err := pkgTenantCache.GetTenantBySlug(ctx, tenantVal); err == nil && t != nil {
+		return t.ID, t.Slug
+	}
+	return uuid.Nil, ""
+}
+
+func resolveTenantSlug(ctx context.Context, tenantID uuid.UUID) string {
+	if pkgTenantCache == nil || tenantID == uuid.Nil || tenantID == store.MasterTenantID {
+		return ""
+	}
+	if t, err := pkgTenantCache.GetTenant(ctx, tenantID); err == nil && t != nil {
+		return t.Slug
+	}
+	return ""
 }
 
 // httpMinRole returns the minimum role required for an HTTP endpoint based on HTTP method.
@@ -238,7 +266,7 @@ func httpMinRole(method string) permissions.Role {
 	}
 }
 
-// enrichContext injects locale, role, userID, and tenantID from authResult into ctx.
+// enrichContext injects locale, role, userID, tenantID, and tenant slug from authResult into ctx.
 // Used by requireAuth middleware and ServeHTTP handlers that do their own auth checks.
 func enrichContext(ctx context.Context, r *http.Request, auth authResult) context.Context {
 	ctx = store.WithLocale(ctx, extractLocale(r))
@@ -262,6 +290,9 @@ func enrichContext(ctx context.Context, r *http.Request, auth authResult) contex
 		tenantID = store.MasterTenantID
 	}
 	ctx = store.WithTenantID(ctx, tenantID)
+	if auth.TenantSlug != "" {
+		ctx = store.WithTenantSlug(ctx, auth.TenantSlug)
+	}
 	slog.Debug("security.http_auth_resolved",
 		"path", r.URL.Path,
 		"role", string(auth.Role),
