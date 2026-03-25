@@ -38,25 +38,26 @@ type BootstrapCleanupFunc func(ctx context.Context, agentID uuid.UUID, userID st
 // Loop is the agent execution loop for one agent instance.
 // Think → Act → Observe cycle with tool execution.
 type Loop struct {
-	id            string
-	agentUUID     uuid.UUID // set for context propagation
-	tenantID      uuid.UUID // agent's owning tenant
-	agentType     string    // "open" or "predefined"
-	provider      providers.Provider
-	model         string
-	contextWindow int
-	maxTokens     int // max output tokens per LLM call (0 = default 8192)
-	maxIterations int
-	maxToolCalls  int
+	id               string
+	agentUUID        uuid.UUID // set for context propagation
+	tenantID         uuid.UUID // agent's owning tenant
+	tenantSlug       string    // tenant slug for tenant-scoped data/workspace paths
+	agentType        string    // "open" or "predefined"
+	provider         providers.Provider
+	model            string
+	contextWindow    int
+	maxTokens        int // max output tokens per LLM call (0 = default 8192)
+	maxIterations    int
+	maxToolCalls     int
 	workspace        string
-	dataDir          string // global workspace root for team workspace resolution
+	dataDir          string // tenant-scoped workspace root for team workspace resolution
 	workspaceSharing *store.WorkspaceSharingConfig
 
 	// Per-agent overrides from DB (nil = use global defaults)
-	restrictToWs  *bool
-	subagentsCfg  *config.SubagentsConfig
-	memoryCfg     *config.MemoryConfig
-	sandboxCfg    *sandbox.Config
+	restrictToWs *bool
+	subagentsCfg *config.SubagentsConfig
+	memoryCfg    *config.MemoryConfig
+	sandboxCfg   *sandbox.Config
 
 	eventPub        bus.EventPublisher // currently unused by Loop; kept for future use
 	sessions        store.SessionStore
@@ -140,7 +141,7 @@ type Loop struct {
 
 	// Budget enforcement: monthly spending limit in cents (0 = unlimited)
 	budgetMonthlyCents int
-	tracingStore store.TracingStore
+	tracingStore       store.TracingStore
 
 	// Memory store for extractive memory fallback (writes directly when LLM flush fails)
 	memStore store.MemoryStore
@@ -172,15 +173,15 @@ type AgentEvent struct {
 
 // LoopConfig configures a new Loop.
 type LoopConfig struct {
-	ID              string
-	Provider        providers.Provider
-	Model           string
-	ContextWindow   int
-	MaxTokens       int // max output tokens per LLM call (0 = default 8192)
-	MaxIterations   int
-	MaxToolCalls    int
+	ID               string
+	Provider         providers.Provider
+	Model            string
+	ContextWindow    int
+	MaxTokens        int // max output tokens per LLM call (0 = default 8192)
+	MaxIterations    int
+	MaxToolCalls     int
 	Workspace        string
-	DataDir          string // global workspace root for team workspace resolution
+	DataDir          string // tenant-scoped workspace root for team workspace resolution
 	WorkspaceSharing *store.WorkspaceSharingConfig
 
 	// Per-agent DB overrides (nil = use global defaults)
@@ -218,9 +219,10 @@ type LoopConfig struct {
 	ShellDenyGroups map[string]bool
 
 	// Agent UUID + tenant for context propagation to tools
-	AgentUUID uuid.UUID
-	TenantID  uuid.UUID // agent's owning tenant — injected into execution context
-	AgentType string    // "open" or "predefined"
+	AgentUUID  uuid.UUID
+	TenantID   uuid.UUID // agent's owning tenant — injected into execution context
+	TenantSlug string
+	AgentType  string // "open" or "predefined"
 
 	// Per-user file seeding + dynamic context loading
 	EnsureUserFiles   EnsureUserFilesFunc
@@ -268,7 +270,7 @@ type LoopConfig struct {
 
 	// Budget enforcement
 	BudgetMonthlyCents int
-	TracingStore store.TracingStore
+	TracingStore       store.TracingStore
 
 	// Memory store for extractive memory fallback (writes directly when LLM flush fails)
 	MemoryStore store.MemoryStore
@@ -311,6 +313,7 @@ func NewLoop(cfg LoopConfig) *Loop {
 		id:                     cfg.ID,
 		agentUUID:              cfg.AgentUUID,
 		tenantID:               cfg.TenantID,
+		tenantSlug:             cfg.TenantSlug,
 		agentType:              cfg.AgentType,
 		provider:               cfg.Provider,
 		model:                  cfg.Model,
@@ -434,7 +437,7 @@ type RunResult struct {
 type MediaResult struct {
 	Path        string `json:"path"`                   // local file path
 	ContentType string `json:"content_type,omitempty"` // MIME type
-	Size        int64  `json:"size,omitempty"`          // file size in bytes
+	Size        int64  `json:"size,omitempty"`         // file size in bytes
 	AsVoice     bool   `json:"as_voice,omitempty"`     // send as voice message (Telegram OGG)
 }
 
@@ -443,17 +446,17 @@ type MediaResult struct {
 // on *runState without passing 20+ individual variables.
 type runState struct {
 	// Loop control
-	loopDetector toolLoopState
-	totalUsage   providers.Usage
-	iteration    int
+	loopDetector   toolLoopState
+	totalUsage     providers.Usage
+	iteration      int
 	totalToolCalls int
 
 	// Output accumulators
 	finalContent   string
 	finalThinking  string
-	asyncToolCalls []string    // async spawn tool names for fallback
+	asyncToolCalls []string // async spawn tool names for fallback
 	mediaResults   []MediaResult
-	deliverables   []string   // tool output content for team task results
+	deliverables   []string // tool output content for team task results
 	pendingMsgs    []providers.Message
 
 	// Event state

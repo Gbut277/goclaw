@@ -38,6 +38,9 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 	if l.tenantID != uuid.Nil {
 		ctx = store.WithTenantID(ctx, l.tenantID)
 	}
+	if l.tenantSlug != "" {
+		ctx = store.WithTenantSlug(ctx, l.tenantSlug)
+	}
 	// Inject user ID into context for per-user scoping (memory, context files, etc.)
 	if req.UserID != "" {
 		ctx = store.WithUserID(ctx, req.UserID)
@@ -160,23 +163,13 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 	if req.TeamWorkspace == "" && l.teamStore != nil && l.agentUUID != uuid.Nil {
 		if team, _ := l.teamStore.GetTeamForAgent(ctx, l.agentUUID); team != nil {
 			resolvedTeamSettings = team.Settings
-			wsChat := req.ChatID
-			if wsChat == "" {
-				wsChat = req.UserID
-			}
-			shared := tools.IsSharedWorkspace(team.Settings)
-			// Resolve team workspace via layered pipeline: tenant → team → user/chat.
-			wsDir := tools.ResolveWorkspace(l.dataDir,
-				tools.TenantLayer(store.TenantIDFromContext(ctx), store.TenantSlugFromContext(ctx)),
-				tools.TeamLayer(team.ID),
-				tools.UserChatLayer(wsChat, shared),
-			)
-			if err := os.MkdirAll(wsDir, 0750); err != nil {
-				slog.Warn("failed to create team workspace directory", "workspace", wsDir, "error", err)
-			}
-			ctx = tools.WithToolTeamWorkspace(ctx, wsDir)
-			if team.LeadAgentID == l.agentUUID {
-				ctx = tools.WithToolWorkspace(ctx, wsDir)
+			if wsDir, err := l.autoTeamWorkspaceDir(req, team); err == nil {
+				ctx = tools.WithToolTeamWorkspace(ctx, wsDir)
+				if team.LeadAgentID == l.agentUUID {
+					ctx = tools.WithToolWorkspace(ctx, wsDir)
+				}
+			} else {
+				slog.Warn("failed to create team workspace directory", "team", team.ID, "error", err)
 			}
 			if req.TeamID == "" {
 				ctx = tools.WithToolTeamID(ctx, team.ID.String())
@@ -246,6 +239,7 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 		AgentID:             l.agentUUID,
 		AgentKey:            l.id,
 		TenantID:            l.tenantID,
+		TenantSlug:          l.tenantSlug,
 		UserID:              req.UserID,
 		AgentType:           l.agentType,
 		SenderID:            req.SenderID,
@@ -275,4 +269,16 @@ func (l *Loop) injectContext(ctx context.Context, req *RunRequest) (contextSetup
 		ctx:                  ctx,
 		resolvedTeamSettings: resolvedTeamSettings,
 	}, nil
+}
+
+func (l *Loop) autoTeamWorkspaceDir(req *RunRequest, team *store.TeamData) (string, error) {
+	// l.dataDir is already tenant-scoped by the resolver for managed agents.
+	wsChat := req.ChatID
+	if wsChat == "" {
+		wsChat = req.UserID
+	}
+	if tools.IsSharedWorkspace(team.Settings) {
+		wsChat = ""
+	}
+	return tools.WorkspaceDir(l.dataDir, team.ID, wsChat)
 }

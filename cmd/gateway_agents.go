@@ -155,7 +155,7 @@ func buildEmbeddingProvider(
 	return nil
 }
 
-func setupSubagents(providerReg *providers.Registry, cfg *config.Config, msgBus *bus.MessageBus, toolsReg *tools.Registry, workspace string, sandboxMgr sandbox.Manager) *tools.SubagentManager {
+func setupSubagents(providerReg *providers.Registry, cfg *config.Config, msgBus *bus.MessageBus, toolsReg *tools.Registry, workspace, dataDir string, sandboxMgr sandbox.Manager) *tools.SubagentManager {
 	names := providerReg.List(context.Background())
 	if len(names) == 0 {
 		return nil
@@ -198,12 +198,12 @@ func setupSubagents(providerReg *providers.Registry, cfg *config.Config, msgBus 
 	toolsFactory := func() *tools.Registry {
 		reg := toolsReg.Clone()
 		if sandboxMgr != nil {
-			reg.Register(tools.NewSandboxedReadFileTool(workspace, agentCfg.RestrictToWorkspace, sandboxMgr))
+			reg.Register(newSubagentReadTool(reg, workspace, dataDir, agentCfg.RestrictToWorkspace, sandboxMgr))
 			reg.Register(tools.NewSandboxedWriteFileTool(workspace, agentCfg.RestrictToWorkspace, sandboxMgr))
 			reg.Register(tools.NewSandboxedListFilesTool(workspace, agentCfg.RestrictToWorkspace, sandboxMgr))
 			reg.Register(tools.NewSandboxedExecTool(workspace, agentCfg.RestrictToWorkspace, sandboxMgr))
 		} else {
-			reg.Register(tools.NewReadFileTool(workspace, agentCfg.RestrictToWorkspace))
+			reg.Register(newSubagentReadTool(reg, workspace, dataDir, agentCfg.RestrictToWorkspace, nil))
 			reg.Register(tools.NewWriteFileTool(workspace, agentCfg.RestrictToWorkspace))
 			reg.Register(tools.NewListFilesTool(workspace, agentCfg.RestrictToWorkspace))
 			reg.Register(tools.NewExecTool(workspace, agentCfg.RestrictToWorkspace))
@@ -212,6 +212,22 @@ func setupSubagents(providerReg *providers.Registry, cfg *config.Config, msgBus 
 	}
 
 	return tools.NewSubagentManager(provider, providerReg, agentCfg.Model, msgBus, toolsFactory, subCfg)
+}
+
+func newSubagentReadTool(reg *tools.Registry, workspace, dataDir string, restrict bool, sandboxMgr sandbox.Manager) *tools.ReadFileTool {
+	var readTool *tools.ReadFileTool
+	if sandboxMgr != nil {
+		readTool = tools.NewSandboxedReadFileTool(workspace, restrict, sandboxMgr)
+	} else {
+		readTool = tools.NewReadFileTool(workspace, restrict)
+	}
+	if existing, ok := reg.Get("read_file"); ok {
+		if parentReadTool, ok := existing.(*tools.ReadFileTool); ok {
+			readTool.CopyConfigFrom(parentReadTool)
+		}
+	}
+	readTool.SetDataDir(dataDir)
+	return readTool
 }
 
 // setupTTS creates the TTS manager from config and registers providers.

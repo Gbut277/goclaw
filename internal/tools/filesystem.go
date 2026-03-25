@@ -8,7 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/google/uuid"
+
 	"github.com/nextlevelbuilder/goclaw/internal/bootstrap"
+	"github.com/nextlevelbuilder/goclaw/internal/config"
 	"github.com/nextlevelbuilder/goclaw/internal/sandbox"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
@@ -22,14 +25,15 @@ var virtualSystemFiles = map[string]string{
 
 // ReadFileTool reads file contents, optionally through a sandbox container.
 type ReadFileTool struct {
-	workspace        string
-	restrict         bool
-	allowedPrefixes  []string                // extra allowed path prefixes (e.g. skills dirs)
-	deniedPrefixes   []string                // path prefixes to deny access to (e.g. .goclaw)
-	sandboxMgr       sandbox.Manager         // nil = direct host access
-	contextFileIntc  *ContextFileInterceptor // nil = no virtual FS routing
-	memIntc          *MemoryInterceptor      // nil = no memory routing
-	permStore store.ConfigPermissionStore // nil = no group read restriction
+	workspace       string
+	dataDir         string
+	restrict        bool
+	allowedPrefixes []string                    // extra allowed path prefixes (e.g. skills dirs)
+	deniedPrefixes  []string                    // path prefixes to deny access to (e.g. .goclaw)
+	sandboxMgr      sandbox.Manager             // nil = direct host access
+	contextFileIntc *ContextFileInterceptor     // nil = no virtual FS routing
+	memIntc         *MemoryInterceptor          // nil = no memory routing
+	permStore       store.ConfigPermissionStore // nil = no group read restriction
 }
 
 // SetContextFileInterceptor enables virtual FS routing for context files.
@@ -49,6 +53,26 @@ func (t *ReadFileTool) SetConfigPermStore(s store.ConfigPermissionStore) {
 
 func NewReadFileTool(workspace string, restrict bool) *ReadFileTool {
 	return &ReadFileTool{workspace: workspace, restrict: restrict}
+}
+
+// SetDataDir configures the global data directory root used as a secondary
+// read root after the effective workspace for relative read_file paths.
+func (t *ReadFileTool) SetDataDir(dataDir string) {
+	t.dataDir = dataDir
+}
+
+// CopyConfigFrom copies read_file routing and access settings from another tool.
+// Used when rebuilding read_file for subagents with a different workspace/sandbox.
+func (t *ReadFileTool) CopyConfigFrom(src *ReadFileTool) {
+	if src == nil {
+		return
+	}
+	t.dataDir = src.dataDir
+	t.allowedPrefixes = append([]string(nil), src.allowedPrefixes...)
+	t.deniedPrefixes = append([]string(nil), src.deniedPrefixes...)
+	t.contextFileIntc = src.contextFileIntc
+	t.memIntc = src.memIntc
+	t.permStore = src.permStore
 }
 
 // AllowPaths adds extra path prefixes that read_file is allowed to access
@@ -133,24 +157,33 @@ func (t *ReadFileTool) Execute(ctx context.Context, args map[string]any) *Result
 		}
 	}
 
-	// Sandbox routing (sandboxKey from ctx — thread-safe)
-	sandboxKey := ToolSandboxKeyFromCtx(ctx)
-	if t.sandboxMgr != nil && sandboxKey != "" {
-		return t.executeInSandbox(ctx, path, sandboxKey)
-	}
-
 	// Host execution — use per-user workspace from context if available
 	workspace := ToolWorkspaceFromCtx(ctx)
 	if workspace == "" {
 		workspace = t.workspace
 	}
 	allowed := allowedWithTeamWorkspace(ctx, t.allowedPrefixes)
-	resolved, err := resolvePathWithAllowed(path, workspace, effectiveRestrict(ctx, t.restrict), allowed)
+	resolved, err := resolveReadPath(path, workspace, effectiveRestrict(ctx, t.restrict), allowed, t.preferredReadRoots(ctx, path, workspace, allowed))
 	if err != nil {
 		return ErrorResult(err.Error())
 	}
 	if err := checkDeniedPath(resolved, t.workspace, t.deniedPrefixes); err != nil {
 		return ErrorResult(err.Error())
+	}
+
+	// Sandbox routing: reads must stay inside the mounted workspace when a sandbox
+	// is active. Allowed external roots are only readable in host mode.
+	sandboxKey := ToolSandboxKeyFromCtx(ctx)
+	if t.sandboxMgr != nil && sandboxKey != "" {
+		containerPath, ok := t.sandboxContainerPath(resolved)
+		if !ok {
+			return ErrorResult("access denied: sandboxed read_file cannot access paths outside workspace")
+		}
+		if isBinaryFileExt(resolved) {
+			ext := strings.ToLower(filepath.Ext(resolved))
+			return ErrorResult(fmt.Sprintf("cannot read binary file (%s). Use the appropriate tool: read_image for images, read_document for documents, read_audio for audio, read_video for video.", ext))
+		}
+		return t.executeInSandboxPath(ctx, containerPath, sandboxKey)
 	}
 
 	// Block binary files — reading them wastes context with garbled data.
@@ -173,17 +206,98 @@ func (t *ReadFileTool) Execute(ctx context.Context, args map[string]any) *Result
 	return SilentResult(string(data))
 }
 
-func (t *ReadFileTool) executeInSandbox(ctx context.Context, path, sandboxKey string) *Result {
+func (t *ReadFileTool) preferredReadRoots(ctx context.Context, path, workspace string, allowedPrefixes []string) []string {
+	var roots []string
+	seen := make(map[string]struct{})
+	add := func(root string) {
+		if root == "" {
+			return
+		}
+		clean := filepath.Clean(root)
+		if _, ok := seen[clean]; ok {
+			return
+		}
+		seen[clean] = struct{}{}
+		roots = append(roots, clean)
+	}
+
+	add(workspace)
+	if t.dataDir != "" {
+		tenantID := store.TenantIDFromContext(ctx)
+		dataRoot := t.dataDir
+		if tenantID != uuid.Nil && tenantID != store.MasterTenantID {
+			dataRoot = config.TenantDataDir(t.dataDir, tenantID, store.TenantSlugFromContext(ctx))
+		}
+		if dataRoot != "" && allowDataDirFallback(path, t.dataDir, allowedPrefixes) {
+			add(dataRoot)
+		}
+	}
+	return roots
+}
+
+// allowDataDirFallback reports whether a relative path should be retried under the
+// tenant/global data dir. Only subdirectories already allowlisted under dataDir are
+// eligible; broad prefixes like dataDir/tenants must not expose every tenant subtree.
+func allowDataDirFallback(path, dataDir string, allowedPrefixes []string) bool {
+	if dataDir == "" || path == "" || filepath.IsAbs(path) {
+		return false
+	}
+
+	clean := filepath.Clean(path)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return false
+	}
+
+	top := clean
+	if idx := strings.IndexRune(clean, filepath.Separator); idx >= 0 {
+		top = clean[:idx]
+	}
+	if top == "" || top == "." || top == ".." || top == "tenants" {
+		return false
+	}
+
+	dataDirReal := canonicalPath(dataDir)
+	for _, prefix := range allowedPrefixes {
+		prefixReal := canonicalPath(prefix)
+		if !isPathInside(prefixReal, dataDirReal) {
+			continue
+		}
+		rel, err := filepath.Rel(dataDirReal, prefixReal)
+		if err != nil {
+			continue
+		}
+		rel = filepath.Clean(rel)
+		if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		allowedTop := rel
+		if idx := strings.IndexRune(rel, filepath.Separator); idx >= 0 {
+			allowedTop = rel[:idx]
+		}
+		if allowedTop == top && allowedTop != "tenants" {
+			return true
+		}
+	}
+	return false
+}
+
+func canonicalPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	absPath, _ := filepath.Abs(path)
+	realPath, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		return absPath
+	}
+	return realPath
+}
+
+func (t *ReadFileTool) executeInSandboxPath(ctx context.Context, containerPath, sandboxKey string) *Result {
 	bridge, err := t.getFsBridge(ctx, sandboxKey)
 	if err != nil {
 		return ErrorResult(fmt.Sprintf("sandbox error: %v", err))
 	}
-
-	containerCwd, cwdErr := SandboxCwd(ctx, t.workspace, sandbox.DefaultContainerWorkdir)
-	if cwdErr != nil {
-		return ErrorResult(fmt.Sprintf("sandbox path mapping: %v", cwdErr))
-	}
-	containerPath := ResolveSandboxPath(path, containerCwd)
 
 	data, err := bridge.ReadFile(ctx, containerPath)
 	if err != nil {
@@ -191,6 +305,42 @@ func (t *ReadFileTool) executeInSandbox(ctx context.Context, path, sandboxKey st
 	}
 
 	return SilentResult(data)
+}
+
+func (t *ReadFileTool) sandboxContainerPath(resolved string) (string, bool) {
+	if resolved == "" || t.workspace == "" {
+		return "", false
+	}
+
+	absWorkspace, _ := filepath.Abs(t.workspace)
+	wsReal, err := filepath.EvalSymlinks(absWorkspace)
+	if err != nil {
+		wsReal = absWorkspace
+	}
+
+	absResolved, _ := filepath.Abs(resolved)
+	resolvedReal, err := filepath.EvalSymlinks(absResolved)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return "", false
+		}
+		resolvedReal, err = resolveThroughExistingAncestors(absResolved)
+		if err != nil {
+			return "", false
+		}
+	}
+	if !isPathInside(resolvedReal, wsReal) {
+		return "", false
+	}
+
+	rel, err := filepath.Rel(wsReal, resolvedReal)
+	if err != nil {
+		return "", false
+	}
+	if rel == "." {
+		return sandbox.DefaultContainerWorkdir, true
+	}
+	return filepath.Join(sandbox.DefaultContainerWorkdir, rel), true
 }
 
 func (t *ReadFileTool) getFsBridge(ctx context.Context, sandboxKey string) (*sandbox.FsBridge, error) {
@@ -214,6 +364,40 @@ func allowedWithTeamWorkspace(ctx context.Context, base []string) []string {
 	return out
 }
 
+// resolveReadPath resolves the best candidate path for read_file.
+// Relative paths prefer the effective workspace first, then configured data dir roots,
+// before falling back to the workspace candidate for not-found errors.
+func resolveReadPath(path, workspace string, restrict bool, allowedPrefixes, preferredRoots []string) (string, error) {
+	if filepath.IsAbs(path) {
+		return resolvePathWithAllowed(path, workspace, restrict, allowedPrefixes)
+	}
+
+	primary, err := resolvePathWithAllowed(path, workspace, restrict, allowedPrefixes)
+	if err != nil {
+		return "", err
+	}
+	if _, statErr := os.Stat(primary); statErr == nil {
+		return primary, nil
+	}
+
+	for _, root := range preferredRoots {
+		if root == "" {
+			continue
+		}
+		candidate := filepath.Join(root, path)
+		resolved, err := resolvePathWithAllowed(candidate, workspace, restrict, allowedPrefixes)
+		if err != nil || resolved == primary {
+			continue
+		}
+		if _, statErr := os.Stat(resolved); statErr == nil {
+			slog.Debug("read_file: resolved via preferred root", "path", path, "root", root, "resolved", resolved)
+			return resolved, nil
+		}
+	}
+
+	return primary, nil
+}
+
 // resolvePathWithAllowed is like resolvePath but also allows paths under extra prefixes.
 func resolvePathWithAllowed(path, workspace string, restrict bool, allowedPrefixes []string) (string, error) {
 	resolved, err := resolvePath(path, workspace, restrict)
@@ -221,9 +405,14 @@ func resolvePathWithAllowed(path, workspace string, restrict bool, allowedPrefix
 		return resolved, nil
 	}
 	// If restricted and denied, check if path falls under an allowed prefix.
+	// Relative paths are anchored to the workspace, not the process CWD.
 	// Resolve symlinks in the candidate path for safe comparison.
 	cleaned := filepath.Clean(path)
-	absPath, _ := filepath.Abs(cleaned)
+	candidate := cleaned
+	if !filepath.IsAbs(candidate) && workspace != "" {
+		candidate = filepath.Join(workspace, candidate)
+	}
+	absPath, _ := filepath.Abs(candidate)
 	real, evalErr := filepath.EvalSymlinks(absPath)
 	if evalErr != nil {
 		// Try resolving parent for non-existent files
@@ -426,4 +615,3 @@ func resolveThroughExistingAncestors(target string) (string, error) {
 	}
 	return filepath.Clean(target), nil
 }
-

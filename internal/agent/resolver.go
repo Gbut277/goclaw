@@ -257,11 +257,11 @@ func NewManagedResolver(deps ResolverDeps) ResolverFunc {
 				toolsReg = deps.Tools.Clone()
 			}
 			var mcpOpts []mcpbridge.ManagerOption
-		mcpOpts = append(mcpOpts, mcpbridge.WithStore(deps.MCPStore))
-		if deps.MCPPool != nil {
-			mcpOpts = append(mcpOpts, mcpbridge.WithPool(deps.MCPPool))
-		}
-		mcpMgr := mcpbridge.NewManager(toolsReg, mcpOpts...)
+			mcpOpts = append(mcpOpts, mcpbridge.WithStore(deps.MCPStore))
+			if deps.MCPPool != nil {
+				mcpOpts = append(mcpOpts, mcpbridge.WithPool(deps.MCPPool))
+			}
+			mcpMgr := mcpbridge.NewManager(toolsReg, mcpOpts...)
 			if err := mcpMgr.LoadForAgent(ctx, ag.ID, ""); err != nil {
 				slog.Warn("failed to load MCP servers for agent", "agent", agentKey, "error", err)
 			} else if mcpMgr.IsSearchMode() {
@@ -332,7 +332,7 @@ func NewManagedResolver(deps ResolverDeps) ResolverFunc {
 			}
 		}
 
-		// Resolve tenant-scoped DataDir for team workspace resolution.
+		// Resolve the tenant-scoped workspace root for team workspace resolution.
 		dataDir := deps.DataDir
 		if tenantSlug != "" {
 			dataDir = config.TenantDataDir(deps.DataDir, ag.TenantID, tenantSlug)
@@ -343,6 +343,7 @@ func NewManagedResolver(deps ResolverDeps) ResolverFunc {
 			ID:                     ag.AgentKey,
 			AgentUUID:              ag.ID,
 			TenantID:               ag.TenantID,
+			TenantSlug:             tenantSlug,
 			AgentType:              ag.AgentType,
 			Provider:               provider,
 			Model:                  ag.Model,
@@ -436,4 +437,3 @@ func derefInt(p *int) int {
 	}
 	return *p
 }
-

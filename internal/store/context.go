@@ -268,6 +268,9 @@ func TenantSlugFromContext(ctx context.Context) string {
 	if v, ok := ctx.Value(TenantSlugKey).(string); ok {
 		return v
 	}
+	if rc := RunContextFromCtx(ctx); rc != nil {
+		return rc.TenantSlug
+	}
 	return ""
 }
 

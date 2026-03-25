@@ -246,6 +246,7 @@ func setupToolRegistry(
 	}
 	if rf, ok := toolsReg.Get("read_file"); ok {
 		if t, ok := rf.(*tools.ReadFileTool); ok {
+			t.SetDataDir(dataDir)
 			t.DenyPaths(readFileDenyPaths...)
 		}
 	}
@@ -586,4 +587,3 @@ func setupSkillsSystem(
 
 	return skillsLoader, skillSearchTool, globalSkillsDir, bundledSkillsDir, builtinSkillsDir
 }
-
