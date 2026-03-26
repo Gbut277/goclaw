@@ -152,7 +152,8 @@ export function useCron() {
   const updateJob = useCallback(
     async (jobId: string, params: Record<string, unknown>) => {
       try {
-        await ws.call(Methods.CRON_UPDATE, { jobId, ...params });
+        // The gateway expects cron updates nested under `patch`.
+        await ws.call(Methods.CRON_UPDATE, { jobId, patch: params });
         await invalidate();
         toast.success(i18next.t("cron:toast.updated"));
       } catch (err) {
