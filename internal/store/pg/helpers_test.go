@@ -1,7 +1,12 @@
 package pg
 
 import (
+	"context"
 	"testing"
+
+	"github.com/google/uuid"
+
+	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
 
 func TestPqStringArray(t *testing.T) {
@@ -78,7 +83,7 @@ func TestScanStringArray(t *testing.T) {
 }
 
 func TestPqStringArrayRoundtrip(t *testing.T) {
-	// Verify encode→decode roundtrip for tricky values.
+	// Verify encode->decode roundtrip for tricky values.
 	inputs := [][]string{
 		{"simple"},
 		{"a,b", "c"},
@@ -98,5 +103,35 @@ func TestPqStringArrayRoundtrip(t *testing.T) {
 				t.Errorf("roundtrip mismatch at %d: input %q, got %q (encoded: %q)", i, arr[i], decoded[i], encoded)
 			}
 		}
+	}
+}
+
+func TestTenantIDForInsert_FallsBackToMasterTenant(t *testing.T) {
+	if got := tenantIDForInsert(context.Background()); got != store.MasterTenantID {
+		t.Fatalf("tenantIDForInsert() = %s, want master tenant %s", got, store.MasterTenantID)
+	}
+}
+
+func TestTenantIDForInsert_PreservesContextTenant(t *testing.T) {
+	want := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	ctx := store.WithTenantID(context.Background(), want)
+
+	if got := tenantIDForInsert(ctx); got != want {
+		t.Fatalf("tenantIDForInsert() = %s, want %s", got, want)
+	}
+}
+
+func TestRequireTenantID_RejectsMissingTenant(t *testing.T) {
+	if _, err := requireTenantID(context.Background()); err == nil {
+		t.Fatal("requireTenantID() expected error for missing tenant")
+	}
+}
+
+func TestRequireTenantID_PreservesContextTenant(t *testing.T) {
+	want := uuid.MustParse("11111111-1111-1111-1111-111111111112")
+	ctx := store.WithTenantID(context.Background(), want)
+
+	if got, err := requireTenantID(ctx); err != nil || got != want {
+		t.Fatalf("requireTenantID() = (%s, %v), want (%s, nil)", got, err, want)
 	}
 }

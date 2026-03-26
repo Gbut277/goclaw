@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -120,14 +119,13 @@ func (s *PGCronStore) ListJobs(ctx context.Context, includeDisabled bool, agentI
 		args = append(args, userID)
 		argIdx++
 	}
-	clause, targs, _, tErr := scopeClause(ctx, argIdx)
-	if tErr != nil {
-		slog.Warn("cron.ListJobs: tenant context missing, returning empty (fail-closed)", "error", tErr)
-		return nil
-	}
-	if clause != "" {
-		q += clause
-		args = append(args, targs...)
+	if !store.IsCrossTenant(ctx) {
+		tid, err := requireTenantID(ctx)
+		if err != nil {
+			return []store.CronJob{}
+		}
+		q += fmt.Sprintf(" AND tenant_id = $%d", argIdx)
+		args = append(args, tid)
 		argIdx++
 	}
 
@@ -147,6 +145,9 @@ func (s *PGCronStore) ListJobs(ctx context.Context, includeDisabled bool, agentI
 		}
 		result = append(result, *job)
 	}
+	if result == nil {
+		result = []store.CronJob{}
+	}
 	return result
 }
 
@@ -160,9 +161,9 @@ func (s *PGCronStore) RemoveJob(ctx context.Context, jobID string) error {
 	args := []any{id}
 
 	if !store.IsCrossTenant(ctx) {
-		tid := store.TenantIDFromContext(ctx)
-		if tid == uuid.Nil {
-			return fmt.Errorf("tenant_id required")
+		tid, err := requireTenantID(ctx)
+		if err != nil {
+			return err
 		}
 		q += fmt.Sprintf(" AND tenant_id = $%d", len(args)+1)
 		args = append(args, tid)
@@ -189,9 +190,9 @@ func (s *PGCronStore) EnableJob(ctx context.Context, jobID string, enabled bool)
 	args := []any{enabled, time.Now(), id}
 
 	if !store.IsCrossTenant(ctx) {
-		tid := store.TenantIDFromContext(ctx)
-		if tid == uuid.Nil {
-			return fmt.Errorf("tenant_id required")
+		tid, err := requireTenantID(ctx)
+		if err != nil {
+			return err
 		}
 		q += fmt.Sprintf(" AND tenant_id = $%d", len(args)+1)
 		args = append(args, tid)

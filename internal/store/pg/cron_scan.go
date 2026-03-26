@@ -21,9 +21,9 @@ func (s *PGCronStore) scanJob(ctx context.Context, id uuid.UUID) (*store.CronJob
 	args := []any{id}
 
 	if !store.IsCrossTenant(ctx) {
-		tid := store.TenantIDFromContext(ctx)
-		if tid == uuid.Nil {
-			return nil, fmt.Errorf("tenant_id required")
+		tid, err := requireTenantID(ctx)
+		if err != nil {
+			return nil, err
 		}
 		q += fmt.Sprintf(" AND tenant_id = $%d", len(args)+1)
 		args = append(args, tid)

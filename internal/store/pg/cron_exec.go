@@ -57,12 +57,13 @@ func (s *PGCronStore) GetRunLog(ctx context.Context, jobID string, limit, offset
 	var tenantJoin, tenantWhere string
 	var tenantArgs []any
 	if !store.IsCrossTenant(ctx) {
-		tid := store.TenantIDFromContext(ctx)
-		if tid != uuid.Nil {
-			tenantJoin = " JOIN cron_jobs j ON r.job_id = j.id"
-			tenantWhere = " AND j.tenant_id = $1"
-			tenantArgs = append(tenantArgs, tid)
+		tid, err := requireTenantID(ctx)
+		if err != nil {
+			return []store.CronRunLogEntry{}, 0
 		}
+		tenantJoin = " JOIN cron_jobs j ON r.job_id = j.id"
+		tenantWhere = " AND j.tenant_id = $1"
+		tenantArgs = append(tenantArgs, tid)
 	}
 
 	var total int
@@ -119,6 +120,9 @@ func (s *PGCronStore) GetRunLog(ctx context.Context, jobID string, limit, offset
 			InputTokens:  inputTokens,
 			OutputTokens: outputTokens,
 		})
+	}
+	if result == nil {
+		result = []store.CronRunLogEntry{}
 	}
 	return result, total
 }

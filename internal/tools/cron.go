@@ -154,9 +154,9 @@ func (t *CronTool) Execute(ctx context.Context, args map[string]any) *Result {
 
 	switch action {
 	case "status":
-		return t.handleStatus()
+		return t.handleStatus(ctx)
 	case "list":
-		return t.handleList(ctx, args, agentID, userID)
+		return t.handleList(ctx, args)
 	case "add":
 		return t.handleAdd(ctx, args, agentID, userID)
 	case "update":
@@ -172,15 +172,23 @@ func (t *CronTool) Execute(ctx context.Context, args map[string]any) *Result {
 	}
 }
 
-func (t *CronTool) handleStatus() *Result {
-	status := t.cronStore.Status()
+func (t *CronTool) handleStatus(ctx context.Context) *Result {
+	status := make(map[string]any)
+	for k, v := range t.cronStore.Status() {
+		status[k] = v
+	}
+	// Report the tenant-visible job count without narrowing to the current agent/user.
+	status["jobs"] = len(t.cronStore.ListJobs(ctx, true, "", ""))
 	data, _ := json.MarshalIndent(status, "", "  ")
 	return NewResult(string(data))
 }
 
-func (t *CronTool) handleList(ctx context.Context, args map[string]any, agentID, userID string) *Result {
+func (t *CronTool) handleList(ctx context.Context, args map[string]any) *Result {
 	includeDisabled, _ := args["includeDisabled"].(bool)
-	jobs := t.cronStore.ListJobs(ctx, includeDisabled, agentID, userID)
+	jobs := t.cronStore.ListJobs(ctx, includeDisabled, "", "")
+	if jobs == nil {
+		jobs = []store.CronJob{}
+	}
 
 	result := map[string]any{
 		"jobs":  jobs,
@@ -423,6 +431,9 @@ func (t *CronTool) handleRuns(ctx context.Context, args map[string]any, agentID,
 	}
 
 	entries, total := t.cronStore.GetRunLog(ctx, jobID, limit, 0)
+	if entries == nil {
+		entries = []store.CronRunLogEntry{}
+	}
 
 	result := map[string]any{
 		"entries": entries,

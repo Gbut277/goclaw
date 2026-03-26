@@ -26,13 +26,16 @@ func (s *PGCronStore) UpdateJob(ctx context.Context, jobID string, patch store.C
 		updates["enabled"] = *patch.Enabled
 	}
 	// Build tenant WHERE suffix for internal reads (defense-in-depth).
+	var tenantID uuid.UUID
 	tenantSuffix := ""
 	var tenantArg []any
 	if !store.IsCrossTenant(ctx) {
-		if tid := store.TenantIDFromContext(ctx); tid != uuid.Nil {
-			tenantSuffix = " AND tenant_id = $2"
-			tenantArg = append(tenantArg, tid)
+		tenantID, err = requireTenantID(ctx)
+		if err != nil {
+			return nil, err
 		}
+		tenantSuffix = " AND tenant_id = $2"
+		tenantArg = append(tenantArg, tenantID)
 	}
 
 	if patch.Schedule != nil {
@@ -202,12 +205,7 @@ func (s *PGCronStore) UpdateJob(ctx context.Context, jobID string, patch store.C
 	if store.IsCrossTenant(ctx) {
 		execErr = execMapUpdate(ctx, s.db, "cron_jobs", id, updates)
 	} else {
-		tid := store.TenantIDFromContext(ctx)
-		if tid == uuid.Nil {
-			execErr = fmt.Errorf("tenant_id required for update")
-		} else {
-			execErr = execMapUpdateWhereTenant(ctx, s.db, "cron_jobs", updates, id, tid)
-		}
+		execErr = execMapUpdateWhereTenant(ctx, s.db, "cron_jobs", updates, id, tenantID)
 	}
 	if err := execErr; err != nil {
 		return nil, err
