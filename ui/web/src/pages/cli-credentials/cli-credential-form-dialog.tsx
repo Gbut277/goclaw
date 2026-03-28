@@ -205,8 +205,15 @@ export function CliCredentialFormDialog({ open, onOpenChange, credential, preset
                     onChange={(e) => setEnvValues((prev) => ({ ...prev, [ev.name]: e.target.value }))}
                     className="text-base md:text-sm"
                   />
-                  {ev.desc && (
-                    <p className="text-xs text-muted-foreground">{ev.desc}</p>
+                  {(ev.desc || ev.url) && (
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {ev.desc && <p className="text-xs text-muted-foreground">{ev.desc}</p>}
+                      {ev.url && (
+                        <a href={ev.url} target="_blank" rel="noreferrer" className="text-xs font-semibold text-primary hover:underline">
+                          {t("form.getToken", "Get Token")} &rarr;
+                        </a>
+                      )}
+                    </div>
                   )}
                 </div>
               ))}

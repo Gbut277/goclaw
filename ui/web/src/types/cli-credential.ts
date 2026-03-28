@@ -19,6 +19,7 @@ export interface CLIPresetEnvVar {
   desc: string;
   is_file?: boolean;
   optional?: boolean;
+  url?: string;
 }
 
 export interface CLIPreset {
