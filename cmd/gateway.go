@@ -523,12 +523,16 @@ func runGateway() {
 	pairingMethods.SetBroadcaster(server.BroadcastEvent)
 	// Wire pairing request callback — works for both PG and SQLite stores.
 	type pairingRequestNotifier interface {
-		SetOnRequest(func(code, senderID, channel, chatID string))
+		SetOnRequest(func(code, senderID, channel, chatID string, metadata map[string]string))
 	}
 	if ps, ok := pgStores.Pairing.(pairingRequestNotifier); ok {
-		ps.SetOnRequest(func(code, senderID, channel, chatID string) {
+		ps.SetOnRequest(func(code, senderID, channel, chatID string, metadata map[string]string) {
 			server.BroadcastEvent(*protocol.NewEvent(protocol.EventDevicePairReq, map[string]any{
-				"code": code, "sender_id": senderID, "channel": channel, "chat_id": chatID,
+				"code": code,
+				"sender_id": senderID,
+				"channel": channel,
+				"chat_id": chatID,
+				"metadata": metadata,
 			}))
 		})
 	}

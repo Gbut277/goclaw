@@ -4,6 +4,7 @@ import { useAuthStore } from "@/stores/use-auth-store";
 import { useWsEvent } from "./use-ws-event";
 import { Methods, Events } from "@/api/protocol";
 import { toast } from "@/stores/use-toast-store";
+import { formatUserLabel } from "@/lib/format-user-label";
 
 interface Options {
   /** Show toast on new pairing request. Enable in only ONE call site to avoid duplicates. */
@@ -37,11 +38,13 @@ export function usePendingPairingsCount({ showToast }: Options = {}) {
       (payload: unknown) => {
         fetchCount();
         if (showToast) {
-          const p = payload as Record<string, string> | undefined;
-          toast.info(
-            "New pairing request",
-            `${p?.channel ?? "device"} — ${p?.sender_id ?? "unknown"}`,
-          );
+          const p = payload as { channel?: string; sender_id?: string; metadata?: Record<string, string> } | undefined;
+          const senderId = p?.sender_id ?? "unknown";
+          const label = formatUserLabel(senderId, { metadata: p?.metadata });
+          const message = label === senderId
+            ? `${p?.channel ?? "device"} — ${senderId}`
+            : `${p?.channel ?? "device"} — ${label} (${senderId})`;
+          toast.info("New pairing request", message);
         }
       },
       [fetchCount, showToast],

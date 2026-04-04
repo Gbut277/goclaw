@@ -62,6 +62,7 @@ export interface PendingPairing {
   account_id: string;
   created_at: number;
   expires_at: number;
+  metadata?: Record<string, string>;
 }
 
 // Approved paired device from WS device.pair.list
@@ -71,6 +72,7 @@ export interface PairedDevice {
   chat_id: string;
   paired_at: number;
   paired_by: string;
+  metadata?: Record<string, string>;
 }
 
 // Manager group info from GET /v1/channels/instances/{id}/writers/groups

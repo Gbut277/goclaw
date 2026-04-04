@@ -1,12 +1,33 @@
 type ContactLike = { display_name?: string; username?: string } | null;
 type Resolver = (id: string) => ContactLike;
+export type UserLabelOptions = {
+  resolve?: Resolver;
+  metadata?: Record<string, string>;
+};
+
+type UserLabelArg = Resolver | UserLabelOptions | undefined;
+
+function normalizeUserLabelArg(arg?: UserLabelArg): UserLabelOptions {
+  if (!arg) return {};
+  if (typeof arg === "function") return { resolve: arg };
+  return arg;
+}
 
 /**
  * Format a user/sender ID into a human-readable label.
- * Display hierarchy: display_name > @username > formatted ID fallback.
+ * Display hierarchy:
+ *   - For group:* IDs with metadata.chat_title: use the channel title
+ *   - display_name from resolver > @username > formatted ID fallback
  */
-export function formatUserLabel(userId: string, resolve?: Resolver): string {
+export function formatUserLabel(userId: string, arg?: UserLabelArg): string {
   if (!userId) return "";
+
+  const { resolve, metadata } = normalizeUserLabelArg(arg);
+
+  // Special: group:* IDs with chat_title metadata get friendly channel name
+  if (userId.startsWith("group:") && metadata?.chat_title) {
+    return metadata.chat_title;
+  }
 
   // Try contact resolver first
   if (resolve) {

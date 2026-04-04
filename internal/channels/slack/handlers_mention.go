@@ -207,7 +207,15 @@ func (c *Channel) sendPairingReply(ctx context.Context, senderID, channelID stri
 		}
 	}
 
-	code, err := c.pairingService.RequestPairing(ctx, senderID, c.Name(), channelID, "default", nil)
+	// Build metadata: include chat_title for group pairings via best-effort channel lookup.
+	metadata := map[string]string(nil)
+	if strings.HasPrefix(senderID, "group:") {
+		if name := c.resolveChannelName(channelID); name != "" {
+			metadata = map[string]string{"chat_title": name}
+		}
+	}
+
+	code, err := c.pairingService.RequestPairing(ctx, senderID, c.Name(), channelID, "default", metadata)
 	if err != nil {
 		slog.Warn("slack: failed to request pairing code", "error", err)
 		return

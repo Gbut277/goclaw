@@ -24,7 +24,7 @@ const (
 // PGPairingStore implements store.PairingStore backed by Postgres.
 type PGPairingStore struct {
 	db        *sql.DB
-	onRequest func(code, senderID, channel, chatID string)
+	onRequest func(code, senderID, channel, chatID string, metadata map[string]string)
 }
 
 func NewPGPairingStore(db *sql.DB) *PGPairingStore {
@@ -32,7 +32,7 @@ func NewPGPairingStore(db *sql.DB) *PGPairingStore {
 }
 
 // SetOnRequest sets a callback fired after a new pairing request is created.
-func (s *PGPairingStore) SetOnRequest(cb func(code, senderID, channel, chatID string)) {
+func (s *PGPairingStore) SetOnRequest(cb func(code, senderID, channel, chatID string, metadata map[string]string)) {
 	s.onRequest = cb
 }
 
@@ -72,7 +72,7 @@ func (s *PGPairingStore) RequestPairing(ctx context.Context, senderID, channel, 
 		return "", fmt.Errorf("create pairing request: %w", err)
 	}
 	if s.onRequest != nil {
-		go s.onRequest(code, senderID, channel, chatID)
+		go s.onRequest(code, senderID, channel, chatID, metadata)
 	}
 	return code, nil
 }

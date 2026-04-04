@@ -17,6 +17,13 @@ function formatDate(ms: number): string {
   return new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
+function getPairingDisplay(senderId: string, metadata?: Record<string, string>): { label: string; rawId: string | null } {
+  if (senderId.startsWith('group:') && metadata?.chat_title) {
+    return { label: metadata.chat_title, rawId: senderId }
+  }
+  return { label: senderId, rawId: null }
+}
+
 export function PairedDevicesSection() {
   const { t } = useTranslation('channels')
   const { pendingPairings, pairedDevices, loading, refresh, approvePairing, denyPairing, revokePairing } = usePairedDevices()
@@ -46,7 +53,9 @@ export function PairedDevicesSection() {
             <div>
               <p className="text-[11px] font-medium text-text-secondary mb-2">{t('pairing.pending', { count: pendingPairings.length })}</p>
               <div className="space-y-2">
-                {pendingPairings.map((p) => (
+                {pendingPairings.map((p) => {
+                  const { label, rawId } = getPairingDisplay(p.sender_id, p.metadata)
+                  return (
                   <div key={p.code} className="flex items-center justify-between rounded-lg border border-border p-3">
                     <div>
                       <div className="flex items-center gap-2">
@@ -54,7 +63,8 @@ export function PairedDevicesSection() {
                         <span className="font-mono text-xs font-medium text-text-primary">{p.code}</span>
                       </div>
                       <div className="mt-1 text-[11px] text-text-muted">
-                        {t('pairing.sender')}{p.sender_id}
+                        <span>{t('pairing.sender')}{label}</span>
+                        {rawId && <span className="ml-1 font-mono opacity-60">{rawId}</span>}
                         {p.chat_id && ` | ${t('pairing.chat')}${p.chat_id}`}
                         {' | '}{formatRelativeTime(p.created_at)}
                       </div>
@@ -68,7 +78,7 @@ export function PairedDevicesSection() {
                       </button>
                     </div>
                   </div>
-                ))}
+                )})}
               </div>
             </div>
           )}
@@ -89,12 +99,17 @@ export function PairedDevicesSection() {
                     </tr>
                   </thead>
                   <tbody>
-                    {pairedDevices.map((d) => (
+                    {pairedDevices.map((d) => {
+                      const { label, rawId } = getPairingDisplay(d.sender_id, d.metadata)
+                      return (
                       <tr key={`${d.channel}-${d.sender_id}`} className="border-b border-border last:border-0 hover:bg-surface-tertiary/20">
                         <td className="px-3 py-2">
                           <span className="rounded-full px-1.5 py-0.5 text-[10px] bg-surface-tertiary text-text-secondary border border-border">{d.channel}</span>
                         </td>
-                        <td className="px-3 py-2 font-mono text-text-primary">{d.sender_id}</td>
+                        <td className="px-3 py-2">
+                          <span className="text-text-primary">{label}</span>
+                          {rawId && <span className="ml-1.5 font-mono text-[10px] text-text-muted">{rawId}</span>}
+                        </td>
                         <td className="px-3 py-2 text-text-muted">{formatDate(d.paired_at)}</td>
                         <td className="px-3 py-2 text-text-muted">{d.paired_by}</td>
                         <td className="px-3 py-2 text-right">
@@ -103,7 +118,7 @@ export function PairedDevicesSection() {
                           </button>
                         </td>
                       </tr>
-                    ))}
+                    )})}
                   </tbody>
                 </table>
               </div>
@@ -118,7 +133,11 @@ export function PairedDevicesSection() {
           open
           onOpenChange={() => setApproveTarget(null)}
           title={t('pairing.confirmApprove.title')}
-          description={t('pairing.confirmApprove.description', { channel: approveTarget.channel, senderId: approveTarget.sender_id, code: approveTarget.code })}
+          description={t('pairing.confirmApprove.description', {
+            channel: approveTarget.channel,
+            senderId: getPairingDisplay(approveTarget.sender_id, approveTarget.metadata).label,
+            code: approveTarget.code,
+          })}
           confirmLabel={t('pairing.confirmApprove.confirmLabel')}
           onConfirm={async () => { await approvePairing(approveTarget.code); setApproveTarget(null) }}
         />
@@ -128,7 +147,11 @@ export function PairedDevicesSection() {
           open
           onOpenChange={() => setDenyTarget(null)}
           title={t('pairing.confirmDeny.title')}
-          description={t('pairing.confirmDeny.description', { channel: denyTarget.channel, senderId: denyTarget.sender_id, code: denyTarget.code })}
+          description={t('pairing.confirmDeny.description', {
+            channel: denyTarget.channel,
+            senderId: getPairingDisplay(denyTarget.sender_id, denyTarget.metadata).label,
+            code: denyTarget.code,
+          })}
           confirmLabel={t('pairing.confirmDeny.confirmLabel')}
           variant="destructive"
           onConfirm={async () => { await denyPairing(denyTarget.code); setDenyTarget(null) }}
@@ -139,7 +162,10 @@ export function PairedDevicesSection() {
           open
           onOpenChange={() => setRevokeTarget(null)}
           title={t('pairing.confirmRevoke.title')}
-          description={t('pairing.confirmRevoke.description', { channel: revokeTarget.channel, senderId: revokeTarget.sender_id })}
+          description={t('pairing.confirmRevoke.description', {
+            channel: revokeTarget.channel,
+            senderId: getPairingDisplay(revokeTarget.sender_id, revokeTarget.metadata).label,
+          })}
           confirmLabel={t('pairing.confirmRevoke.confirmLabel')}
           variant="destructive"
           onConfirm={async () => { await revokePairing(revokeTarget.sender_id, revokeTarget.channel); setRevokeTarget(null) }}

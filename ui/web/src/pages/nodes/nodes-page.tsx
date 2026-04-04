@@ -18,6 +18,14 @@ import { useDeferredLoading } from "@/hooks/use-deferred-loading";
 import { useContactResolver } from "@/hooks/use-contact-resolver";
 import { formatUserLabel } from "@/lib/format-user-label";
 
+function getPairingDisplay(senderId: string, resolve: ReturnType<typeof useContactResolver>["resolve"], metadata?: Record<string, string>) {
+  const label = formatUserLabel(senderId, { resolve, metadata });
+  return {
+    label,
+    rawId: senderId !== label ? senderId : null,
+  };
+}
+
 export function NodesPage() {
   const { t } = useTranslation("nodes");
   const { pendingPairings, pairedDevices, loading, refresh, approvePairing, denyPairing, revokePairing } = useNodes();
@@ -64,18 +72,23 @@ export function NodesPage() {
                   {t("pendingRequests", { count: pendingPairings.length })}
                 </h3>
                 <div className="space-y-2">
-                  {pendingPairings.map((p: PendingPairing) => (
+                  {pendingPairings.map((p: PendingPairing) => {
+                    const display = getPairingDisplay(p.sender_id, resolve, p.metadata);
+                    return (
                     <div key={p.code} className="flex items-center justify-between rounded-lg border p-4">
                       <div>
                         <div className="flex items-center gap-2">
                           <Badge variant="outline">{p.channel}</Badge>
                           <span className="font-mono text-sm font-medium">{p.code}</span>
                         </div>
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          {t("sender")}{formatUserLabel(p.sender_id, resolve)}
-                          {p.chat_id && ` | ${t("chat")}${p.chat_id}`}
+                        <div className="mt-1 text-xs">
+                          <span className="font-medium">{display.label}</span>
+                          {display.rawId && (
+                            <span className="ml-1.5 text-muted-foreground font-mono">{display.rawId}</span>
+                          )}
+                          {p.chat_id && <span className="text-muted-foreground"> | {t("chat")}{p.chat_id}</span>}
                           {" | "}
-                          {formatRelativeTime(new Date(p.created_at))}
+                          <span className="text-muted-foreground">{formatRelativeTime(new Date(p.created_at))}</span>
                         </div>
                       </div>
                       <div className="flex gap-2">
@@ -96,7 +109,7 @@ export function NodesPage() {
                         </Button>
                       </div>
                     </div>
-                  ))}
+                  )})}
                 </div>
               </div>
             )}
@@ -119,12 +132,19 @@ export function NodesPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {pairedDevices.map((d: PairedDevice) => (
+                      {pairedDevices.map((d: PairedDevice) => {
+                        const display = getPairingDisplay(d.sender_id, resolve, d.metadata);
+                        return (
                         <tr key={`${d.channel}-${d.sender_id}`} className="border-b last:border-0 hover:bg-muted/30">
                           <td className="px-4 py-3">
                             <Badge variant="outline">{d.channel}</Badge>
                           </td>
-                          <td className="px-4 py-3 font-medium">{formatUserLabel(d.sender_id, resolve)}</td>
+                          <td className="px-4 py-3">
+                            <span className="font-medium">{display.label}</span>
+                            {display.rawId && (
+                              <span className="ml-1.5 text-muted-foreground font-mono text-xs">{display.rawId}</span>
+                            )}
+                          </td>
                           <td className="px-4 py-3 text-muted-foreground">
                             {formatDate(new Date(d.paired_at))}
                           </td>
@@ -140,7 +160,7 @@ export function NodesPage() {
                             </Button>
                           </td>
                         </tr>
-                      ))}
+                      )})}
                     </tbody>
                   </table>
                 </div>
@@ -155,7 +175,11 @@ export function NodesPage() {
           open
           onOpenChange={() => setApproveTarget(null)}
           title={t("confirmApprove.title")}
-          description={t("confirmApprove.description", { channel: approveTarget.channel, senderId: approveTarget.sender_id, code: approveTarget.code })}
+          description={t("confirmApprove.description", {
+            channel: approveTarget.channel,
+            senderId: getPairingDisplay(approveTarget.sender_id, resolve, approveTarget.metadata).label,
+            code: approveTarget.code,
+          })}
           confirmLabel={t("confirmApprove.confirmLabel")}
           onConfirm={async () => {
             await approvePairing(approveTarget.code);
@@ -169,7 +193,11 @@ export function NodesPage() {
           open
           onOpenChange={() => setDenyTarget(null)}
           title={t("confirmDeny.title")}
-          description={t("confirmDeny.description", { channel: denyTarget.channel, senderId: denyTarget.sender_id, code: denyTarget.code })}
+          description={t("confirmDeny.description", {
+            channel: denyTarget.channel,
+            senderId: getPairingDisplay(denyTarget.sender_id, resolve, denyTarget.metadata).label,
+            code: denyTarget.code,
+          })}
           confirmLabel={t("confirmDeny.confirmLabel")}
           variant="destructive"
           onConfirm={async () => {
@@ -184,7 +212,10 @@ export function NodesPage() {
           open
           onOpenChange={() => setRevokeTarget(null)}
           title={t("confirmRevoke.title")}
-          description={t("confirmRevoke.description", { channel: revokeTarget.channel, senderId: revokeTarget.sender_id })}
+          description={t("confirmRevoke.description", {
+            channel: revokeTarget.channel,
+            senderId: getPairingDisplay(revokeTarget.sender_id, resolve, revokeTarget.metadata).label,
+          })}
           confirmLabel={t("confirmRevoke.confirmLabel")}
           variant="destructive"
           onConfirm={async () => {

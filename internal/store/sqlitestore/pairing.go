@@ -28,14 +28,14 @@ const (
 // SQLitePairingStore implements store.PairingStore backed by SQLite.
 type SQLitePairingStore struct {
 	db        *sql.DB
-	onRequest func(code, senderID, channel, chatID string)
+	onRequest func(code, senderID, channel, chatID string, metadata map[string]string)
 }
 
 func NewSQLitePairingStore(db *sql.DB) *SQLitePairingStore {
 	return &SQLitePairingStore{db: db}
 }
 
-func (s *SQLitePairingStore) SetOnRequest(cb func(code, senderID, channel, chatID string)) {
+func (s *SQLitePairingStore) SetOnRequest(cb func(code, senderID, channel, chatID string, metadata map[string]string)) {
 	s.onRequest = cb
 }
 
@@ -72,7 +72,7 @@ func (s *SQLitePairingStore) RequestPairing(ctx context.Context, senderID, chann
 		return "", fmt.Errorf("create pairing request: %w", err)
 	}
 	if s.onRequest != nil {
-		go s.onRequest(code, senderID, channel, chatID)
+		go s.onRequest(code, senderID, channel, chatID, metadata)
 	}
 	return code, nil
 }

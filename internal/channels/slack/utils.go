@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"time"
 
+	slackapi "github.com/slack-go/slack"
+
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
@@ -79,6 +81,34 @@ func (c *Channel) resolveDisplayName(userID string) string {
 	c.userCacheMu.Unlock()
 
 	return name
+}
+
+// resolveChannelName fetches and caches the Slack channel name for a channel ID.
+func (c *Channel) resolveChannelName(channelID string) string {
+	c.userCacheMu.RLock()
+	// Reuse userCache for channel names with "channel:" prefix.
+	key := "channel:" + channelID
+	cu, found := c.userCache[key]
+	c.userCacheMu.RUnlock()
+
+	if found && time.Since(cu.fetchedAt) < userCacheTTL {
+		return cu.displayName
+	}
+
+	channel, err := c.api.GetConversationInfo(&slackapi.GetConversationInfoInput{ChannelID: channelID})
+	if err != nil {
+		slog.Debug("slack: failed to resolve channel name", "channel_id", channelID, "error", err)
+		return ""
+	}
+	if channel == nil || channel.Name == "" {
+		return ""
+	}
+
+	c.userCacheMu.Lock()
+	c.userCache[key] = cachedUser{displayName: channel.Name, fetchedAt: time.Now()}
+	c.userCacheMu.Unlock()
+
+	return channel.Name
 }
 
 // nonRetryableAuthErrors matches Slack errors that indicate permanent auth failure.
