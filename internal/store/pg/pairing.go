@@ -50,15 +50,22 @@ func (s *PGPairingStore) RequestPairing(ctx context.Context, senderID, channel, 
 	}
 
 	// Check existing (per tenant)
-	var existingCode string
-	err := s.db.QueryRowContext(ctx, "SELECT code FROM pairing_requests WHERE sender_id = $1 AND channel = $2 AND tenant_id = $3", senderID, channel, tid).Scan(&existingCode)
-	if err == nil {
-		return existingCode, nil
-	}
-
 	metaJSON := []byte("{}")
 	if len(metadata) > 0 {
 		metaJSON, _ = json.Marshal(metadata)
+	}
+
+	var existingCode string
+	err := s.db.QueryRowContext(ctx, "SELECT code FROM pairing_requests WHERE sender_id = $1 AND channel = $2 AND tenant_id = $3", senderID, channel, tid).Scan(&existingCode)
+	if err == nil {
+		_, updateErr := s.db.ExecContext(ctx,
+			"UPDATE pairing_requests SET chat_id = $1, account_id = $2, expires_at = $3, metadata = $4 WHERE code = $5 AND tenant_id = $6",
+			chatID, accountID, time.Now().Add(codeTTL), metaJSON, existingCode, tid,
+		)
+		if updateErr != nil {
+			return "", fmt.Errorf("refresh pairing request: %w", updateErr)
+		}
+		return existingCode, nil
 	}
 
 	code := generatePairingCode()

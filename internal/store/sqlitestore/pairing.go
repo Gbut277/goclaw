@@ -51,15 +51,22 @@ func (s *SQLitePairingStore) RequestPairing(ctx context.Context, senderID, chann
 		return "", fmt.Errorf("max pending pairing requests (%d) exceeded", maxPendingPerAccount)
 	}
 
-	var existingCode string
-	err := s.db.QueryRowContext(ctx, "SELECT code FROM pairing_requests WHERE sender_id = ? AND channel = ? AND tenant_id = ?", senderID, channel, tid).Scan(&existingCode)
-	if err == nil {
-		return existingCode, nil
-	}
-
 	metaJSON := []byte("{}")
 	if len(metadata) > 0 {
 		metaJSON, _ = json.Marshal(metadata)
+	}
+
+	var existingCode string
+	err := s.db.QueryRowContext(ctx, "SELECT code FROM pairing_requests WHERE sender_id = ? AND channel = ? AND tenant_id = ?", senderID, channel, tid).Scan(&existingCode)
+	if err == nil {
+		_, updateErr := s.db.ExecContext(ctx,
+			"UPDATE pairing_requests SET chat_id = ?, account_id = ?, expires_at = ?, metadata = ? WHERE code = ? AND tenant_id = ?",
+			chatID, accountID, now.Add(codeTTL).Round(0), metaJSON, existingCode, tid,
+		)
+		if updateErr != nil {
+			return "", fmt.Errorf("refresh pairing request: %w", updateErr)
+		}
+		return existingCode, nil
 	}
 
 	code := generatePairingCode()
