@@ -30,14 +30,19 @@ func (c *Channel) Send(_ context.Context, msg bus.OutboundMessage) error {
 	threadTS := msg.Metadata["message_thread_id"]
 
 	// DEBUG
+	keys := make([]string, 0, len(msg.Metadata))
+	for k := range msg.Metadata {
+		keys = append(keys, k)
+	}
 	slog.Debug("slack send called",
 		"channel_id", channelID,
 		"placeholder_key", placeholderKey,
 		"thread_ts", threadTS,
-		"content_preview", Truncate(msg.Content, 50),
+		"content_preview", channels.Truncate(msg.Content, 50),
 		"content_len", len(msg.Content),
 		"placeholder_update", msg.Metadata["placeholder_update"],
-		"metadata_keys", fmt.Sprintf("%v", mapKeys(msg.Metadata)),
+		"stream_finalized", msg.Metadata["stream_finalized"],
+		"metadata_keys", fmt.Sprintf("%v", keys),
 	)
 
 	// Extract bare Slack channel ID from composite localKey (e.g. "C0123:thread:TS" → "C0123").
@@ -57,11 +62,15 @@ func (c *Channel) Send(_ context.Context, msg bus.OutboundMessage) error {
 	content := msg.Content
 
 	// NO_REPLY: delete placeholder, return
+	// But skip deletion if stream_finalized=true — the streaming pipeline already has the
+	// placeholder TS and FinalizeStream handed it off; deleting would remove streamed content.
 	if content == "" {
-		if pTS, ok := c.placeholders.Load(placeholderKey); ok {
-			c.placeholders.Delete(placeholderKey)
-			ts := pTS.(string)
-			_, _, _ = c.api.DeleteMessage(slackChannelID, ts)
+		if msg.Metadata["stream_finalized"] != "true" {
+			if pTS, ok := c.placeholders.Load(placeholderKey); ok {
+				c.placeholders.Delete(placeholderKey)
+				ts := pTS.(string)
+				_, _, _ = c.api.DeleteMessage(slackChannelID, ts)
+			}
 		}
 		return nil
 	}

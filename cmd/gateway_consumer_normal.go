@@ -427,11 +427,21 @@ func processNormalMessage(
 				"chat_id", chatID,
 				"session", session,
 			)
+			cleanupMeta := meta
+			// When streaming was active, FinalizeStream already handed off the placeholder TS
+			// to Send() via the placeholders map. Skip placeholder deletion in Send() by
+			// setting stream_finalized so the streamed content remains visible.
+			if enableStream {
+				if cleanupMeta == nil {
+					cleanupMeta = make(map[string]string)
+				}
+				cleanupMeta["stream_finalized"] = "true"
+			}
 			deps.MsgBus.PublishOutbound(bus.OutboundMessage{
 				Channel:  channel,
 				ChatID:   chatID,
 				Content:  "",
-				Metadata: meta,
+				Metadata: cleanupMeta,
 			})
 			return
 		}
@@ -442,11 +452,18 @@ func processNormalMessage(
 		if blockReplyEnabled && outcome.Result.BlockReplies > 0 && outcome.Result.Content == outcome.Result.LastBlockReply && len(outcome.Result.Media) == 0 {
 			slog.Debug("inbound: dedup final message (matches last block reply)",
 				"channel", channel, "run_id", rID)
+			dedupMeta := meta
+			if enableStream {
+				if dedupMeta == nil {
+					dedupMeta = make(map[string]string)
+				}
+				dedupMeta["stream_finalized"] = "true"
+			}
 			deps.MsgBus.PublishOutbound(bus.OutboundMessage{
 				Channel:  channel,
 				ChatID:   chatID,
 				Content:  "",
-				Metadata: meta,
+				Metadata: dedupMeta,
 			})
 			return
 		}
