@@ -29,11 +29,15 @@ func (c *Channel) Send(_ context.Context, msg bus.OutboundMessage) error {
 	}
 	threadTS := msg.Metadata["message_thread_id"]
 
+	// Extract bare Slack channel ID from composite localKey (e.g. "C0123:thread:TS" → "C0123").
+	// The composite localKey is used as chatID for routing but Slack API calls require bare channel IDs.
+	slackChannelID := extractBareChannelID(channelID)
+
 	// Placeholder update (LLM retry notification)
 	if msg.Metadata["placeholder_update"] == "true" {
 		if pTS, ok := c.placeholders.Load(placeholderKey); ok {
 			ts := pTS.(string)
-			_, _, _, _ = c.api.UpdateMessage(channelID, ts,
+			_, _, _, _ = c.api.UpdateMessage(slackChannelID, ts,
 				slackapi.MsgOptionText(msg.Content, false))
 		}
 		return nil
@@ -46,7 +50,7 @@ func (c *Channel) Send(_ context.Context, msg bus.OutboundMessage) error {
 		if pTS, ok := c.placeholders.Load(placeholderKey); ok {
 			c.placeholders.Delete(placeholderKey)
 			ts := pTS.(string)
-			_, _, _ = c.api.DeleteMessage(channelID, ts)
+			_, _, _ = c.api.DeleteMessage(slackChannelID, ts)
 		}
 		return nil
 	}
@@ -65,27 +69,27 @@ func (c *Channel) Send(_ context.Context, msg bus.OutboundMessage) error {
 			opts = append(opts, slackapi.MsgOptionTS(threadTS))
 		}
 
-		if _, _, _, editErr := c.api.UpdateMessage(channelID, ts, opts...); editErr == nil {
+		if _, _, _, editErr := c.api.UpdateMessage(slackChannelID, ts, opts...); editErr == nil {
 			if remaining != "" {
-				return c.sendChunked(channelID, remaining, threadTS)
+				return c.sendChunked(slackChannelID, remaining, threadTS)
 			}
 			return nil
 		} else {
 			slog.Warn("slack placeholder edit failed, sending new message",
-				"channel_id", channelID, "error", editErr)
+				"channel_id", slackChannelID, "error", editErr)
 		}
 	}
 
 	// Handle media attachments
 	for _, media := range msg.Media {
-		if err := c.uploadFile(channelID, threadTS, media); err != nil {
+		if err := c.uploadFile(slackChannelID, threadTS, media); err != nil {
 			slog.Warn("slack: file upload failed",
 				"file", media.URL, "error", err)
-			c.sendChunked(channelID, fmt.Sprintf("[File upload failed: %s]", media.URL), threadTS)
+			c.sendChunked(slackChannelID, fmt.Sprintf("[File upload failed: %s]", media.URL), threadTS)
 		}
 	}
 
-	return c.sendChunked(channelID, content, threadTS)
+	return c.sendChunked(slackChannelID, content, threadTS)
 }
 
 // sendChunked sends message chunks using markdown-aware splitting.
@@ -101,6 +105,19 @@ func (c *Channel) sendChunked(channelID, content, threadTS string) error {
 		}
 	}
 	return nil
+}
+
+// extractBareChannelID extracts the bare Slack channel ID from a composite localKey.
+// Handles formats: "C0123:thread:TS" or "C0123:topic:ID" → returns "C0123".
+// If no composite suffix is found, returns the key unchanged.
+func extractBareChannelID(key string) string {
+	if idx := strings.Index(key, ":thread:"); idx != -1 {
+		return key[:idx]
+	}
+	if idx := strings.Index(key, ":topic:"); idx != -1 {
+		return key[:idx]
+	}
+	return key
 }
 
 // splitAtLimit splits content into first chunk + remaining using markdown-aware chunking.
