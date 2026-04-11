@@ -29,6 +29,17 @@ func (c *Channel) Send(_ context.Context, msg bus.OutboundMessage) error {
 	}
 	threadTS := msg.Metadata["message_thread_id"]
 
+	// DEBUG
+	slog.Debug("slack send called",
+		"channel_id", channelID,
+		"placeholder_key", placeholderKey,
+		"thread_ts", threadTS,
+		"content_preview", Truncate(msg.Content, 50),
+		"content_len", len(msg.Content),
+		"placeholder_update", msg.Metadata["placeholder_update"],
+		"metadata_keys", fmt.Sprintf("%v", mapKeys(msg.Metadata)),
+	)
+
 	// Extract bare Slack channel ID from composite localKey (e.g. "C0123:thread:TS" → "C0123").
 	// The composite localKey is used as chatID for routing but Slack API calls require bare channel IDs.
 	slackChannelID := extractBareChannelID(channelID)
